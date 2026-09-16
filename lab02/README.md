@@ -71,7 +71,7 @@ git push origin main
 cd lab02/
 
 # Generate the report on the board
-python probes.py
+python probes_student.py
 ```
 
 After completing the code, please validate the resulting JSON output file against `sample_system_report.json` to ensure it conforms to the expected format before submission.
@@ -103,4 +103,3 @@ git push -u origin solution2
 3. **probe_opencv**: probes if you have opencv or not.
 4. **probe_tensorrt**: probes if you have tensorrt or not.
 5. **probe_l4t**: probes if you have l4t or not.
-
