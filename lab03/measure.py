@@ -146,7 +146,7 @@ def is_multimodal(samples: list[float]) -> dict[str, Any]:
     widest_gap = max(gaps)
     gap_index = gaps.index(widest_gap)
     ratio = widest_gap / typical_gap
-    # Map the split in the trimmed list back to the full sorted sample list.
+
     split_index = trim + gap_index + 1
     left, right = ordered[:split_index], ordered[split_index:]
     left_share = len(left) / len(ordered)
@@ -170,6 +170,34 @@ def is_multimodal(samples: list[float]) -> dict[str, Any]:
             }
             for group in (left, right)
         ],
+    )
+
+
+def is_stationary(samples: list[float]) -> dict[str, Any]:
+    source = "first-third vs last-third median drift <= 10% of overall median"
+    if len(samples) < MIN_SAMPLES_FOR_STATIONARITY:
+        return unknown(source, "too few samples to divide into thirds")
+
+    overall_median = statistics.median(samples)
+    if overall_median <= 0:
+        return unknown(source, "overall median is not positive")
+
+    third_size = len(samples) // 3
+    first_median = statistics.median(samples[:third_size])
+    last_median = statistics.median(samples[-third_size:])
+    drift = last_median - first_median
+    relative_drift = abs(drift) / overall_median
+    direction = "slower" if drift > 0 else "faster" if drift < 0 else "flat"
+
+    return measured(
+        relative_drift <= STATIONARITY_TOL,
+        source,
+        first_third_median_ms=round(first_median, 4),
+        last_third_median_ms=round(last_median, 4),
+        drift_ms=round(drift, 4),
+        drift_relative=round(relative_drift, 4),
+        direction=direction,
+        tolerance=STATIONARITY_TOL,
     )
 
 # ===========================================================================
@@ -310,6 +338,7 @@ if __name__ == "__main__":
         "warmup_boundary": find_warmup_boundary(samples),
         "summarize_setup": summarize(samples),
         "is_multimodal": is_multimodal(samples),
+        "is_stationary": is_stationary(samples),
         "probe_power_state": probe_power_state(env),
         "probe_telemetry": probe_telemetry(env),
     }

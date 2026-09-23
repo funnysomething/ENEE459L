@@ -3,40 +3,51 @@
         "value": 1,
         "source": "leading prefix above (1 + 0.5) x median of the run's second half",
         "status": "ok",
-        "settled_rate_ms": 18.6351,
-        "threshold_ms": 27.9527,
+        "settled_rate_ms": 18.4172,
+        "threshold_ms": 27.6258,
         "tolerance": 0.5,
         "retained": 99
     },
     "summarize_setup": {
         "n": 100,
-        "mean": 22.9725,
-        "std": 43.3382,
-        "min": 18.348,
-        "max": 452.0171,
-        "p50": 18.6584,
-        "p95": 18.8239,
-        "p99": 24.2541
+        "mean": 23.287,
+        "std": 48.153,
+        "min": 18.2872,
+        "max": 499.9994,
+        "p50": 18.4331,
+        "p95": 18.7073,
+        "p99": 24.3047
     },
     "is_multimodal": {
         "value": false,
         "source": "widest trimmed gap >= 20.0x the median gap, with >= 10% of samples on each side",
         "status": "ok",
-        "gap_ratio": 14.91,
-        "widest_gap_ms": 0.03958,
-        "typical_gap_ms": 0.00266,
+        "gap_ratio": 15.21,
+        "widest_gap_ms": 0.03846,
+        "typical_gap_ms": 0.00253,
         "modes": [
             {
-                "n": 35,
-                "share": 0.35,
-                "median_ms": 18.4702
+                "n": 81,
+                "share": 0.81,
+                "median_ms": 18.421
             },
             {
-                "n": 65,
-                "share": 0.65,
-                "median_ms": 18.7012
+                "n": 19,
+                "share": 0.19,
+                "median_ms": 18.6657
             }
         ]
+    },
+    "is_stationary": {
+        "value": true,
+        "source": "first-third vs last-third median drift <= 10% of overall median",
+        "status": "ok",
+        "first_third_median_ms": 18.4844,
+        "last_third_median_ms": 18.4228,
+        "drift_ms": -0.0616,
+        "drift_relative": 0.0033,
+        "direction": "faster",
+        "tolerance": 0.1
     },
     "probe_power_state": {
         "value": "25W",
@@ -52,7 +63,7 @@
     },
     "probe_telemetry": {
         "temperature_c": {
-            "value": 50.94,
+            "value": 50.88,
             "source": "sys/devices/virtual/thermal/*/temp",
             "status": "ok",
             "zone": "soc0-thermal",
@@ -65,7 +76,7 @@
             "detail": "none of the documented INA3221 rail paths could be read"
         },
         "gpu_utilization_percent": {
-            "value": 18.2,
+            "value": 13.3,
             "source": "sys/devices/platform/gpu.0/load",
             "status": "ok",
             "units": "per-mille / 10"
