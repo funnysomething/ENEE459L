@@ -93,9 +93,7 @@ def _parse_link_line(line: str) -> dict[str, Any]:
         "gen": _GEN_BY_GTS.get(gts) if gts is not None else None,
     }
 
-def generate_interpretation_string(negotiated, capability):
-    neg_speed = negotiated['gts']
-    cap_speed = capability['gts']
+def generate_interpretation_string(neg_speed, cap_speed, capability, negotiated):
     if cap_speed > neg_speed:
         interpretation = (
             f"drive capable of Gen{capability['gen']}, link running at "
@@ -138,144 +136,100 @@ def probe_module_model(root: Path = Path("/")) -> dict[str, Any]:
 
 # todo by students
 def probe_memory_total_kb(root: Path = Path("/")) -> dict[str, Any]:
-    src = "/proc/meminfo"
-    raw = read_text(root, src)
-    if not raw:
-        return unknown(src, "meminfo missing")
-    m = re.search(r"MemTotal:\s+(\d+)", raw)
-    if not m:
-        return unknown(src, "MemTotal line not found")
+    """How much memory is there, in kB, as the kernel counts it?
+
+    This will read a little under 8 GB on an 8 GB board. That gap is not a
+    fault: the carveout for the GPU and other hardware is taken before Linux
+    ever sees the pool. Students are expected to notice and to explain it in
+    their report rather than round it up.
+    """
+    
     return {"value": int(m.group(1)), "source": src, "status": "ok"}
 
 
 def probe_root_source(root: Path = Path("/")) -> dict[str, Any]:
-    src = "/proc/mounts"
-    raw = read_text(root, src)
-    if not raw:
-        return unknown(src, "no root mount entry found in mount table")
-    for line in raw.splitlines():
-        if line.startswith("/"):
-            parts = line.split()
-            device = parts[0]
-            kind = "nvme" if "nvme" in device else ("mmcblk" if "mmcblk" in device else "other")
-            return {"value": device, "kind": kind, "source": src, "status": "ok"}
+    """What device is the root filesystem actually mounted from?
+
+    This is the probe the lab is built around. A unit that boots from the SD
+    card works, boots, and passes every casual inspection — and then runs the
+    semester's benchmarks against a card an order of magnitude slower than the
+    NVMe sitting unused in the slot. The failure is silent, which is exactly
+    why it has to be a command rather than an assumption.
+
+    /proc/mounts is preferred over `findmnt` because it needs no external
+    binary and no elevation, and because it is what findmnt reads anyway.
+    """
+    
     return unknown(src, "no root mount entry found in mount table")
 
 
 def probe_nvme_present(root: Path = Path("/")) -> dict[str, Any]:
-    src = "/sys/block/nvme0n1"
-    nvme_path = Path(root) / "sys/block/nvme0n1"
-    model_path = nvme_path / "model"
-    model = None
-    try:
-        if model_path.exists():
-            model = model_path.read_text(errors="replace").strip()
-    except (OSError, UnicodeDecodeError):
-        pass
-    if nvme_path.exists() or nvme_path.is_symlink():
-        return {"value": True, "model": model, "source": src, "status": "ok"}
-    return {"value": False, "model": None, "source": src, "status": "ok"}
+    """Is there an NVMe device visible as a block device at all?
+
+    Deliberately separate from probe_root_source. A machine can have an NVMe
+    fitted and still boot from the SD card, and telling those two states apart
+    is what lets the troubleshooting tree in the lab guide send a student to
+    the right branch.
+    """
+    
+    return {
+        "value": ,
+        "model": ,
+        "source": ,
+        "status": "ok",
+    }
 
 
 def probe_pcie_link(root: Path = Path("/"), lspci_output: str | None = None) -> dict[str, Any]:
-    src = "lspci -vv"
-    if lspci_output is not None:
-        output = lspci_output
-    else:
-        output = run(["lspci", "-vv"])
-    if output is None:
-        return unknown(src, "lspci not available or failed")
-    lnksta_line = None
-    lnkcap_line = None
-    for line in output.splitlines():
-        if "LnkSta:" in line:
-            lnksta_line = line
-        elif "LnkCap:" in line:
-            lnkcap_line = line
-    if lnksta_line is None or lnkcap_line is None:
-        return unknown(src, "LnkSta or LnkCap line missing")
-    negotiated = _parse_link_line(lnksta_line)
-    capability = _parse_link_line(lnkcap_line)
-    interpretation = generate_interpretation_string(negotiated, capability)
+    """What did the PCIe link negotiate, and what was it capable of?
+
+    Two numbers, not one. The gap between them is the lab's worked example of
+    spec sheet against measured reality: a Gen4 drive in a Gen3 slot advertises
+    16 GT/s and settles at 8 GT/s, and a student who reports only the second
+    number has recorded a fact without recording what it means.
+
+    `lspci_output` exists so the tests can drive this without root or hardware.
+    In normal use it is None and the probe shells out.
+    """
+        
     return {
-        "value": lnksta_line.strip(),
-        "negotiated": negotiated,
-        "capability": capability,
-        "interpretation": interpretation,
-        "source": src,
+        "value":,
+        "negotiated": ,
+        "capability": ,
+        "interpretation": ,
+        "source": ,
         "status": "ok",
     }
 
 
 def probe_thermal_zones(root: Path = Path("/")) -> dict[str, Any]:
-    src = "/sys/class/thermal/thermal_zone*/temp"
-    zones = []
-    zone_dir = Path(root) / "sys/class/thermal"
-    if not zone_dir.exists():
-        return unknown(src, "thermal zone directory missing")
-    max_temp = 0.0
-    for zone_path in zone_dir.glob("thermal_zone*"):
-        temp_path = zone_path / "temp"
-        type_path = zone_path / "type"
-        if not temp_path.exists():
-            continue
-        try:
-            with open(str(temp_path), "rb") as f:
-                raw_bytes = f.read()
-            if raw_bytes is None:
-                continue
-            content = raw_bytes.decode("utf-8", errors="replace")
-            temp_raw = content.strip()
-            temp_c = float(temp_raw) / 1000.0
-        except (ValueError, OSError):
-            continue
-        zone_name = zone_path.name
-        zone_type = None
-        if type_path.exists():
-            try:
-                zone_type = type_path.read_text(errors="replace").strip()
-            except (OSError, UnicodeDecodeError):
-                pass
-        zones.append({"zone": zone_name, "type": zone_type, "temp_c": temp_c})
-        if temp_c > max_temp:
-            max_temp = temp_c
-    if not zones:
-        return unknown(src, "no thermal zones found")
+    """Every thermal zone the kernel exposes, in degrees C.
+
+    Sysfs reports millidegrees. The division by 1000 is the entire trap: a
+    report claiming the board idles at 43,000 degrees has been submitted more
+    than once, and it is a good, cheap lesson in reading units before reading
+    numbers.
+    """
     return {
-        "value": max_temp,
-        "zones": zones,
-        "source": src,
+        "value": ,
+        "zones": ,
+        "source": ,
         "status": "ok",
     }
 
 
 def probe_power_mode(root: Path = Path("/"), nvpmodel_output: str | None = None) -> dict[str, Any]:
-    src = "nvpmodel -q"
-    if nvpmodel_output is not None:
-        output = nvpmodel_output
-    else:
-        output = run(["nvpmodel", "-q"])
-    if output is None:
-        return unknown(src, "nvpmodel not available or failed")
-    # Parse output like "NV Power Mode: MAXN"
-    mode_name = None
-    mode_id = None
-    for line in output.splitlines():
-        if "NV Power Mode:" in line:
-            mode_name = line.split(":")[-1].strip()
-            # Map common names to IDs
-            if "MAXN" in mode_name:
-                mode_id = 0
-            elif "25W" in mode_name or "15W" in mode_name:
-                mode_id = 1 if "25W" in mode_name else 2
-            else:
-                mode_id = None
-    if mode_name is None:
-        return unknown(src, "power mode not found in output")
+    """Which nvpmodel power mode is active?
+
+    Recorded on every artifact this course produces. Lecture 01 slide 24 is
+    the argument for why: two students reporting different throughput for the
+    same model are usually reporting different power modes, and without this
+    field there is no way to find that out after the fact.
+    """
     return {
-        "value": mode_name,
-        "mode_id": mode_id,
-        "source": src,
+        "value": ,
+        "mode_id": ,
+        "source": ,
         "status": "ok",
     }
 
