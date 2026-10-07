@@ -142,20 +142,20 @@ def debug_single_function(func):
     if validation_issues:
         print(f"Graph validation warnings: {validation_issues}")
 
-    # if func is count_parameters, model_size_bytes, or count_activations, call it and print the result
-    # out = func(graph)
-
-    # if func is to_flops, call it with a mock MAC finding and print the result
     mock_macs = computed(
         value=1_500_000,
         source="mock_layer_pass",
         per_layer={"conv1": 432_000, "res_conv": 1_068_000},
     )
-    flops_two = to_flops(mock_macs, convention="mac_is_two_flops")
-    flops_one = to_flops(mock_macs, convention="mac_is_one_flop")
+    if func is to_flops:
+        out = {
+            "mac_is_two_flops": to_flops(mock_macs, convention="mac_is_two_flops"),
+            "mac_is_one_flop": to_flops(mock_macs, convention="mac_is_one_flop"),
+        }
+    else:
+        out = func(graph)
 
-    # see the output with print below
-    print()
+    print(json.dumps(out, indent=2))
 
 
 if __name__ == "__main__":

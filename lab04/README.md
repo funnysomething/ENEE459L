@@ -21,7 +21,7 @@ Finally, the lab grounds these static structural analyses by standardizing arith
 
 ## What You Will Build
 
-Six standalone probes reading sysfs, /proc, and CLI tools:
+Four standalone analysis functions operating on a model graph:
 
 - **`count_parameters`**: Counts the trainable weights and biases across all layers, accounting for grouped convolutions and excluding non-learnable batch normalization buffers.
 - **`model_size_bytes`**: Computes the total memory required to store the model by multiplying parameter and persistent buffer counts by their individual datatype byte widths.

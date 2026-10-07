@@ -18,8 +18,8 @@ FLOPS_PER_MAC = 2
 # rather than an assumption, because the whole point of the parameter is that
 # the caller has to say which one they mean.
 FLOP_CONVENTIONS = {
-    "mac_is_two_flops": 2,
-    "mac_is_one_flop": 1,
+    "mac_is_two_flops": FLOPS_PER_MAC,
+    "mac_is_one_flop": FLOPS_PER_MAC // 2,
 }
 
 # Batch normalisation holds two learnable vectors per channel (scale and shift)
@@ -46,7 +46,56 @@ TIE_EXACT = True
 # ===========================================================================
 
 def count_parameters(graph: Graph) -> dict[str, Any]:
-    pass
+    per_layer: dict[str, int] = {}
+
+    for layer in graph:
+        if layer.kind == "conv":
+            if not layer.kernel or layer.groups < 1:
+                return unknown(
+                    f"{graph.name}: count_parameters",
+                    f"{layer.name} is missing a convolution kernel or valid group count",
+                )
+            in_channels = layer.in_shape[0] if layer.in_shape else 0
+            out_channels = layer.out_shape[0] if layer.out_shape else 0
+            if (
+                in_channels <= 0
+                or out_channels <= 0
+                or in_channels % layer.groups
+                or out_channels % layer.groups
+            ):
+                return unknown(
+                    f"{graph.name}: count_parameters",
+                    f"{layer.name} has invalid channel dimensions for groups={layer.groups}",
+                )
+            weights = (
+                out_channels
+                * (in_channels // layer.groups)
+                * layer.kernel[0]
+                * layer.kernel[1]
+            )
+            per_layer[layer.name] = weights + (out_channels if layer.bias else 0)
+        elif layer.kind == "linear":
+            weights = layer.in_elements * layer.out_elements
+            biases = layer.out_elements if layer.bias else 0
+            per_layer[layer.name] = weights + biases
+        elif layer.kind == "bn":
+            if not layer.out_shape or layer.out_shape[0] <= 0:
+                return unknown(
+                    f"{graph.name}: count_parameters",
+                    f"{layer.name} has no valid batch normalization channel dimension",
+                )
+            per_layer[layer.name] = BN_PARAMS_PER_CHANNEL * layer.out_shape[0]
+        else:
+            per_layer[layer.name] = 0
+
+    return computed(
+        sum(per_layer.values()),
+        f"{graph.name}: {len(graph)} layers, shapes from the description",
+        per_layer=per_layer,
+        includes_bias=True,
+        excludes_bn_buffers=True,
+        bn_params_per_channel=BN_PARAMS_PER_CHANNEL,
+    )
 
 
 # ===========================================================================
@@ -76,7 +125,48 @@ def model_size_bytes(graph: Graph) -> dict[str, Any]:
     Returns a `computed` finding whose value is bytes, with the per-dtype
     breakdown that makes the first bullet checkable.
     """
-    pass
+    parameters = count_parameters(graph)
+    if not is_answered(parameters):
+        return parameters
+
+    per_layer: dict[str, int | float] = {}
+    per_dtype: dict[str, int | float] = {}
+    buffer_bytes: int | float = 0
+
+    for layer in graph:
+        try:
+            weight_bytes = dtype_bytes(layer.weight_dtype)
+        except KeyError as exc:
+            return unknown(
+                f"{graph.name}: model_size_bytes",
+                f"{layer.name}: {exc}",
+            )
+
+        parameter_count = parameters["per_layer"][layer.name]
+        layer_bytes: int | float = parameter_count * weight_bytes
+        per_dtype[layer.weight_dtype] = per_dtype.get(layer.weight_dtype, 0) + layer_bytes
+
+        if layer.kind == "bn":
+            buffer_count = BN_BUFFERS_PER_CHANNEL * layer.out_shape[0]
+            try:
+                buffer_size = buffer_count * dtype_bytes(BUFFER_DTYPE)
+            except KeyError as exc:
+                return unknown(f"{graph.name}: model_size_bytes", str(exc))
+            layer_bytes += buffer_size
+            buffer_bytes += buffer_size
+            per_dtype[BUFFER_DTYPE] = per_dtype.get(BUFFER_DTYPE, 0) + buffer_size
+
+        per_layer[layer.name] = layer_bytes
+
+    return computed(
+        sum(per_layer.values()),
+        f"{graph.name}: per-layer dtypes, buffers at {BUFFER_DTYPE}",
+        per_layer=per_layer,
+        per_dtype=per_dtype,
+        buffer_bytes=buffer_bytes,
+        container_overhead_excluded=True,
+        note="not the size of the file on disk; see the handout, Stage A step 3",
+    )
 
 # ===========================================================================
 # 3. The memory nobody puts in the table
@@ -111,7 +201,90 @@ def count_activations(graph: Graph) -> dict[str, Any]:
     what a memory budget is denominated in, with elements and the layer where
     the peak occurs alongside.
     """
-    pass
+    source = f"{graph.name}: liveness over {len(graph)} layers, input included"
+    try:
+        input_bytes = dtype_bytes(graph.precision)
+        layer_bytes = {layer.name: dtype_bytes(layer.act_dtype) for layer in graph}
+    except KeyError as exc:
+        return unknown(source, str(exc))
+
+    if any(dimension <= 0 for dimension in graph.input_shape):
+        return unknown(source, "network input has an invalid shape")
+    for layer in graph:
+        if any(dimension <= 0 for dimension in layer.out_shape):
+            return unknown(source, f"{layer.name} has an invalid output shape")
+
+    layers = list(graph)
+    positions = {layer.name: index for index, layer in enumerate(layers)}
+    if len(positions) != len(layers):
+        return unknown(source, "layer names must be unique to track activation lifetimes")
+    consumers: dict[str, list[int]] = {layer.name: [] for layer in layers}
+    for index, layer in enumerate(layers):
+        if layer.reads:
+            dependencies = layer.reads
+        elif index:
+            dependencies = (layers[index - 1].name,)
+        else:
+            dependencies = ()
+
+        for dependency in dependencies:
+            if dependency not in consumers:
+                return unknown(source, f"{layer.name} reads unknown tensor {dependency!r}")
+            if positions[dependency] >= index:
+                return unknown(
+                    source,
+                    f"{layer.name} reads a tensor that is not earlier in the graph",
+                )
+            consumers[dependency].append(index)
+
+    total_elements = sum(layer.out_elements for layer in layers)
+    total_bytes: int | float = sum(
+        layer.out_elements * layer_bytes[layer.name] for layer in layers
+    )
+
+    input_elements = 1
+    for dimension in graph.input_shape:
+        input_elements *= dimension
+
+    # Keep a tensor through its last consumer. The input is live during the
+    # first operation, and a layer output remains live if it is the final result.
+    last_use = {
+        name: max(indices) if indices else len(layers)
+        for name, indices in consumers.items()
+    }
+    live: dict[str, tuple[int, int | float]] = {}
+    peak_elements = input_elements
+    peak_bytes = input_elements * input_bytes
+    peak_at = "input"
+    if layers:
+        live["__input__"] = (input_elements, input_bytes)
+
+    for index, layer in enumerate(layers):
+        live[layer.name] = (layer.out_elements, layer_bytes[layer.name])
+        resident_elements = sum(elements for elements, _ in live.values())
+        resident_bytes = sum(elements * size for elements, size in live.values())
+        if resident_bytes > peak_bytes:
+            peak_elements = resident_elements
+            peak_bytes = resident_bytes
+            peak_at = layer.name
+
+        dependencies = layer.reads or ((layers[index - 1].name,) if index else ())
+        for dependency in dependencies:
+            if last_use[dependency] == index:
+                live.pop(dependency, None)
+        if index == 0:
+            live.pop("__input__", None)
+
+    return computed(
+        peak_bytes,
+        source,
+        peak_at=peak_at,
+        peak_elements=peak_elements,
+        total_elements=total_elements,
+        total_bytes=total_bytes,
+        includes_network_input=True,
+        note="peak is the resident set, not the largest single tensor",
+    )
 
 # ===========================================================================
 # 4. The factor of two that halves everybody's numbers
@@ -139,4 +312,35 @@ def to_flops(macs: dict[str, Any], convention: str = "mac_is_two_flops") -> dict
     An unrecognised convention is `unknown`, not a default. The caller asked
     for something this function does not know how to do.
     """
-    pass
+    source = str(macs.get("source", "to_flops"))
+    if convention not in FLOP_CONVENTIONS:
+        return unknown(source, f"unknown MAC to FLOP convention {convention!r}")
+    if not is_answered(macs):
+        return unknown(
+            source,
+            macs.get("detail", "MAC count is not available"),
+        )
+
+    value = macs.get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return unknown(source, "MAC count must be a non-negative number")
+
+    factor = FLOP_CONVENTIONS[convention]
+    per_layer = macs.get("per_layer")
+    extra: dict[str, Any] = {}
+    if isinstance(per_layer, dict):
+        converted: dict[str, int | float] = {}
+        for name, count in per_layer.items():
+            if isinstance(count, bool) or not isinstance(count, (int, float)) or count < 0:
+                return unknown(source, f"per-layer MAC count for {name!r} is invalid")
+            converted[name] = count * factor
+        extra["per_layer"] = converted
+
+    return computed(
+        value * factor,
+        source,
+        convention=convention,
+        flops_per_mac=factor,
+        **extra,
+        note="a count of operations contains no unit of time",
+    )
