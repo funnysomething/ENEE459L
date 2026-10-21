@@ -51,9 +51,70 @@ git push origin main
 ```bash
 cd lab07/
 
-# Generate the report on the board
+# Analyse the supplied PNG; this does not open a camera.
 python frames.py
+
+# Optional: choose a different existing image, output directory, or assumed fps.
+python frames.py --input all_focus_s1_1.0_s2_3.0.png --output-dir output --fps 30
 ```
+
+The default input is `all_focus_s1_1.0_s2_3.0.png`, resolved beside the script.
+Running `python lab07/frames.py` from the repository root also works. Install
+NumPy and OpenCV (`numpy` and `opencv-python`) if they are not already available.
+The original PNG is left unchanged. `output/captured_frame.jpg` is a derived
+preview, and `output/frame_report.json` contains statistics computed directly
+from the decoded PNG, plus the memory budgets. The retained GStreamer capture
+helpers are available for board work, but the report command always reads an
+existing image and never calls them.
+
+### Accounting and diagnostics
+
+`frame_bytes` uses tightly packed payload sizes, rounded up to whole bytes:
+RAW10 is 1.25 bytes/pixel, gray8 is 1, NV12 and I420 are 1.5, RGB and BGR are 3,
+and BGRx is 4. These budgets exclude row alignment, buffer padding, cache
+effects, and extra implementation-specific copies. Bandwidth is payload bytes
+multiplied by the assumed fps. Conversion and resize each count one complete
+input read and one output write. Normalization counts a uint8 input read plus
+an output tensor write, or 15 bytes/pixel for three FP32 channels.
+
+Luma statistics use grayscale samples normalized to [0, 1], with population
+standard deviation. Classification checks, in order: black (maximum at most
+1/255), suspicious (spread below 0.02), dark (mean below 0.10), then scene.
+This ordering keeps a flat dark field from passing as a structured dark scene.
+
+The supplied image is **700×400**, classified as **scene**, with mean luma
+approximately **0.3669** and spread **0.9569**. At an assumed 30 fps:
+
+| Budget | Bytes |
+| --- | ---: |
+| BGR payload per frame | 840,000 |
+| NV12 payload per frame | 420,000 |
+| BGR payload per second | 25,200,000 |
+| NV12 payload per second | 12,600,000 |
+| NV12 → BGR read + write per frame | 1,260,000 |
+| RGB resize to 224×224 read + write | 990,528 |
+| Full-resolution uint8 → FP32 normalization read + write | 4,200,000 |
+
+The normalization row follows the starter's full-resolution example; after
+resizing to 224×224, the same normalization would cost 752,640 bytes. These are
+computed traffic budgets. A still image does not establish camera frame rate,
+latency, dropped frames, or an ISP speedup. Keeping NV12 until it is needed
+halves the full-resolution payload relative to BGR; performing the resize in
+hardware before materializing BGR would also avoid moving full-resolution
+color buffers through the CPU pipeline.
+
+### Verification
+
+From the repository root:
+
+```bash
+python -m unittest discover -s lab07 -v
+```
+
+The tests check the starter's 1920×1080 reference costs, diagnostic boundaries,
+invalid inputs, and report generation from the supplied PNG with camera access
+blocked. The generated report uses the supplied image's actual dimensions, so
+its numbers differ from the starter's 1920×1080 sample.
 
 ## How to Debug your code
 
@@ -62,16 +123,16 @@ There is only one way to debug code -
 
 ## How to save your work
 
-For saving your work, you create a new branch named `solution6` by running the following command.
+Save this work on the `solution` branch:
 ```bash
-git switch -c solution7
+git switch solution
 ```
 
 After this, push your changes with following set of commands - 
 ```bash
 git add .
-git commit -m "Adding things"
-git push -u origin solution7
+git commit -m "Complete lab07 frame analysis using supplied image"
+git push -u origin solution
 ```
 
 ## Before you hand in

@@ -1,24 +1,24 @@
 from __future__ import annotations
 
+import argparse
+import json
+import math
+import time
+from numbers import Integral
+from pathlib import Path
 from typing import Any, Iterable, Sequence
+
+import cv2
+import numpy as np
 
 from schema import BLACK_MAX, FLAT_SPREAD
 
-import cv2
-import time
-import json
-import numpy as np
-from pathlib import Path
 
 class FrameError(ValueError):
-    """A shape or a format this module cannot price. `capture.py` exits 3."""
+    """An invalid frame shape, pixel sample, or pricing parameter."""
 
 
 # The formats this lab prices, in the order Lecture 07 slide 27 lists them.
-# Written as a tuple rather than derived from the function below, because
-# `_bytes_per_pixel` is stubbed in the student tree and a starter whose
-# FORMATS list was empty until the stub was filled would fail in a way that
-# points at the wrong line.
 FORMATS: tuple[str, ...] = ("raw10", "gray8", "nv12", "i420", "rgb", "bgr",
                             "bgrx")
 
@@ -113,38 +113,89 @@ def grab_frame(pipeline: str, warmup_frames: int = 15) -> np.ndarray:
 ## Your work starts here ###
 ############################
 
+def _positive_int(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+        raise FrameError(f"{name} must be a positive integer, got {value!r}")
+    return int(value)
+
+
 def frame_bytes(width: int, height: int, fmt: str) -> int:
-    pass
+    """Tightly packed payload size, excluding row alignment and buffer padding."""
+    width = _positive_int(width, "width")
+    height = _positive_int(height, "height")
+    return math.ceil(width * height * _bytes_per_pixel(fmt))
 
 
 def bytes_per_second(width: int, height: int, fmt: str, fps: float) -> float:
-    pass
+    """One frame's payload transferred at the specified (assumed) frame rate."""
+    if not math.isfinite(fps) or fps < 0:
+        raise FrameError("fps must be finite and nonnegative")
+    return frame_bytes(width, height, fmt) * float(fps)
 
 
 def frame_stats(pixels: Sequence[float] | Iterable[float]) -> dict[str, float]:
-    pass
+    """Summarise normalized luma using the population standard deviation."""
+    values = np.fromiter(pixels, dtype=np.float64)
+    if values.size == 0:
+        raise FrameError("cannot analyse an empty frame")
+    if not np.all(np.isfinite(values)) or np.any((values < 0) | (values > 1)):
+        raise FrameError("luma samples must be finite and in [0, 1]")
+    low = float(values.min())
+    high = float(values.max())
+    return {
+        "min": low,
+        "max": high,
+        "mean": float(values.mean()),
+        "spread": high - low,
+        "sd": float(values.std()),
+        "samples": float(values.size),
+    }
 
 
 def classify(stats: dict[str, float]) -> tuple[str, str]:
-    pass
+    """Distinguish no signal, flat fields, dark scenes, and exposed scenes."""
+    if stats["max"] <= BLACK_MAX:
+        return "black", f"maximum {stats['max']:.4f} <= {BLACK_MAX:.4f}. No sensor signal."
+    if stats["spread"] < FLAT_SPREAD:
+        return "suspicious", f"spread {stats['spread']:.4f} < {FLAT_SPREAD:.4f}. Signal without structure."
+    if stats["mean"] < 0.10:
+        return "dark", f"mean {stats['mean']:.4f} < 0.10. Structured but underexposed."
+    return "scene", f"mean {stats['mean']:.4f}, spread {stats['spread']:.4f}. Exposed and structured."
 
 
 def conversion_bytes(width: int, height: int, src: str, dst: str) -> int:
-    pass
+    """Read the source once and write the destination once."""
+    return frame_bytes(width, height, src) + frame_bytes(width, height, dst)
 
 
 def resize_bytes(src_w: int, src_h: int, dst_w: int, dst_h: int,
                  fmt: str) -> int:
-    pass
+    """Budget one full source read and one resized output write."""
+    return frame_bytes(src_w, src_h, fmt) + frame_bytes(dst_w, dst_h, fmt)
 
 
 def normalise_bytes(width: int, height: int, channels: int = 3,
                     out_bytes: int = 4) -> int:
-    pass
+    """Read uint8 channels and write the normalized tensor (FP32 by default)."""
+    width = _positive_int(width, "width")
+    height = _positive_int(height, "height")
+    channels = _positive_int(channels, "channels")
+    out_bytes = _positive_int(out_bytes, "out_bytes")
+    return width * height * channels * (1 + out_bytes)
 
 
 def summarise_formats(width: int, height: int) -> list[dict[str, Any]]:
-    pass
+    rgb_bytes = frame_bytes(width, height, "rgb")
+    return [
+        {
+            "format": fmt,
+            "bytes_per_pixel": _bytes_per_pixel(fmt),
+            "bytes": frame_bytes(width, height, fmt),
+            "relative_to_rgb": frame_bytes(width, height, fmt) / rgb_bytes,
+            "note": FORMAT_NOTES[fmt],
+        }
+        for fmt in FORMATS
+    ]
 
 
 ###############################
@@ -155,42 +206,51 @@ def main(
     image_filename: str = "captured_frame.jpg",
     json_filename: str = "frame_report.json",
     target_fps: float = 30.0,
+    input_image: str | Path = Path(__file__).with_name("all_focus_s1_1.0_s2_3.0.png"),
 ) -> None:
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
+    # Work from the supplied image; this path never opens camera hardware.
+    source_path = Path(input_image)
+    frame_bgr = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
+    if frame_bgr is None:
+        raise FrameError(f"could not read input image: {source_path}")
+    if not math.isfinite(target_fps) or target_fps < 0:
+        raise FrameError("fps must be finite and nonnegative")
 
+    out_path = Path(output_dir)
     img_path = out_path / image_filename
     json_path = out_path / json_filename
+    if source_path.resolve() in (img_path.resolve(), json_path.resolve()):
+        raise FrameError("output paths must not overwrite the input image")
+    out_path.mkdir(parents=True, exist_ok=True)
 
-    # 1. Capture frame from hardware
-    pipeline_str = gstreamer_pipeline()
-    frame_bgr = grab_frame(pipeline_str)
-
-    # 2. Save captured image to disk
-    cv2.imwrite(str(img_path), frame_bgr)
+    # 1. Save a preview derived from the existing PNG.
+    if not cv2.imwrite(str(img_path), frame_bgr):
+        raise FrameError(f"could not save image: {img_path}")
     height, width, _ = frame_bgr.shape
 
-    # 3. Extract normalized luma/grayscale values in [0.0, 1.0] for classification
+    # 2. Extract normalized luma/grayscale values in [0.0, 1.0] for classification
     # classify() tests against BLACK_MAX (1/255 ≈ 0.0039) and mean < 0.10
     gray_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    normalized_luma = gray_frame.astype(np.float32).ravel() / 255.0
+    normalized_luma = gray_frame.astype(np.float64).ravel() / 255.0
 
-    # 4. Compute statistics and scene category
+    # 3. Compute statistics and scene category
     stats = frame_stats(normalized_luma)
     classification, reason = classify(stats)
 
-    # 5. Calculate memory bus bandwidth and conversion costs
+    # 4. Calculate memory bus bandwidth and conversion costs
     formats_table = summarise_formats(width, height)
     bgr_bandwidth_bps = bytes_per_second(width, height, "bgr", target_fps)
     nv12_to_bgr_cost = conversion_bytes(width, height, "nv12", "bgr")
     norm_cost = normalise_bytes(width, height, channels=3, out_bytes=4)
 
-    # Downsampling budget example (1080p -> 224x224 input tensor)
+    # Downsampling budget from the image's actual size to a 224x224 tensor.
     resize_cost = resize_bytes(width, height, 224, 224, "rgb")
 
-    # 6. Aggregate payload and write JSON
+    # 5. Aggregate payload and write JSON
     payload: dict[str, Any] = {
         "capture_metadata": {
+            "source": "existing_image",
+            "source_image_path": str(source_path.resolve()),
             "saved_image_path": str(img_path.resolve()),
             "width": width,
             "height": height,
@@ -203,6 +263,12 @@ def main(
             "stats": stats,
         },
         "memory_pricing": {
+            "assumptions": {
+                "storage": "tightly packed payloads; excludes stride and buffer padding",
+                "stage_costs": "one full input read plus one output write per stage",
+                "fps": "assumed for budgeting; not measured from the still image",
+                "normalization": "full-resolution uint8 input to FP32 output",
+            },
             "bandwidth_bytes_per_sec": {
                 "bgr_live_stream": bgr_bandwidth_bps,
                 "nv12_live_stream": bytes_per_second(width, height, "nv12", target_fps),
@@ -218,10 +284,21 @@ def main(
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=4)
+        f.write("\n")
 
-    print(f"Captured frame saved to : {img_path}")
+    print(f"Input image analysed    : {source_path}")
+    print(f"Frame preview saved to  : {img_path}")
     print(f"Analysis saved to       : {json_path}")
     print(f"Classification result   : {classification.upper()} ({reason})")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Analyse an existing image and price frame memory traffic.")
+    parser.add_argument("--input", type=Path,
+                        default=Path(__file__).with_name("all_focus_s1_1.0_s2_3.0.png"))
+    parser.add_argument("--output-dir", default=str(Path(__file__).with_name("output")))
+    parser.add_argument("--fps", type=float, default=30.0, help="assumed rate for bandwidth budgeting")
+    args = parser.parse_args()
+    try:
+        main(input_image=args.input, output_dir=args.output_dir, target_fps=args.fps)
+    except (FrameError, OSError, cv2.error) as exc:
+        parser.exit(3, f"error: {exc}\n")
