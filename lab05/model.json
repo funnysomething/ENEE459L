@@ -39,10 +39,5 @@
         40
       ]
     }
-  ],
-  "notes": [
-    "Not a trained network. Four weight tensors with a small convolutional stack's shapes, generated from the seed by a documented LCG.",
-    "No biases, no normalisation, no graph. Each tensor is pruned and accounted for on its own; nothing propagates a removed output channel into the next tensor's input axis.",
-    "Output-channel counts are 20, 20, 40 and 10 so that every ratio in the default sweep lands on a whole channel."
   ]
 }
