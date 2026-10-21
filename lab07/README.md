@@ -51,21 +51,22 @@ git push origin main
 ```bash
 cd lab07/
 
-# Analyse the supplied PNG; this does not open a camera.
-python frames.py
+# Capture and analyse a frame from the CSI camera.
+python3 frames.py
 
 # Optional: choose a different existing image, output directory, or assumed fps.
-python frames.py --input all_focus_s1_1.0_s2_3.0.png --output-dir output --fps 30
+python3 frames.py --input all_focus_s1_1.0_s2_3.0.png --output-dir output --fps 30
 ```
 
-The default input is `all_focus_s1_1.0_s2_3.0.png`, resolved beside the script.
-Running `python lab07/frames.py` from the repository root also works. Install
-NumPy and OpenCV (`numpy` and `opencv-python`) if they are not already available.
-The original PNG is left unchanged. `output/captured_frame.jpg` is a derived
-preview, and `output/frame_report.json` contains statistics computed directly
-from the decoded PNG, plus the memory budgets. The retained GStreamer capture
-helpers are available for board work, but the report command always reads an
-existing image and never calls them.
+The default input is the CSI camera at 1920×1080 and 30 FPS. The capture helper
+warms up the sensor for 15 frames before taking the frame used for analysis.
+Running `python3 lab07/frames.py` from the repository root also works. Use the
+Jetson's system OpenCV with GStreamer support; a pip OpenCV wheel may lack it.
+`output/captured_frame.jpg` contains the captured frame, and
+`output/frame_report.json` contains its statistics, source metadata, and memory
+budgets. `--input` keeps the existing-image workflow available without opening
+the camera, and leaves the source image unchanged. `--fps` changes the assumed
+rate for memory budgeting; camera capture remains configured at 30 FPS.
 
 ### Accounting and diagnostics
 
@@ -82,7 +83,7 @@ standard deviation. Classification checks, in order: black (maximum at most
 1/255), suspicious (spread below 0.02), dark (mean below 0.10), then scene.
 This ordering keeps a flat dark field from passing as a structured dark scene.
 
-The supplied image is **700×400**, classified as **scene**, with mean luma
+For the optional `--input` example, the supplied image is **700×400**, classified as **scene**, with mean luma
 approximately **0.3669** and spread **0.9569**. At an assumed 30 fps:
 
 | Budget | Bytes |
@@ -112,9 +113,10 @@ python -m unittest discover -s lab07 -v
 ```
 
 The tests check the starter's 1920×1080 reference costs, diagnostic boundaries,
-invalid inputs, and report generation from the supplied PNG with camera access
-blocked. The generated report uses the supplied image's actual dimensions, so
-its numbers differ from the starter's 1920×1080 sample.
+invalid inputs, and optional report generation from the supplied PNG with camera
+access blocked. Reports use the input frame's actual dimensions. Live camera
+capture requires a configured CSI sensor and is verified by running the script
+on the Jetson.
 
 ## How to Debug your code
 

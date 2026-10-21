@@ -206,24 +206,29 @@ def main(
     image_filename: str = "captured_frame.jpg",
     json_filename: str = "frame_report.json",
     target_fps: float = 30.0,
-    input_image: str | Path = Path(__file__).with_name("all_focus_s1_1.0_s2_3.0.png"),
+    input_image: str | Path | None = None,
 ) -> None:
-    # Work from the supplied image; this path never opens camera hardware.
-    source_path = Path(input_image)
-    frame_bgr = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
-    if frame_bgr is None:
-        raise FrameError(f"could not read input image: {source_path}")
     if not math.isfinite(target_fps) or target_fps < 0:
         raise FrameError("fps must be finite and nonnegative")
 
+    source_path = Path(input_image) if input_image is not None else None
     out_path = Path(output_dir)
     img_path = out_path / image_filename
     json_path = out_path / json_filename
-    if source_path.resolve() in (img_path.resolve(), json_path.resolve()):
+    if source_path is not None and source_path.resolve() in (img_path.resolve(), json_path.resolve()):
         raise FrameError("output paths must not overwrite the input image")
+
+    if source_path is None:
+        pipeline = gstreamer_pipeline()
+        print("Capturing from CSI camera (1920x1080 at 30 FPS)...", flush=True)
+        frame_bgr = grab_frame(pipeline)
+    else:
+        frame_bgr = cv2.imread(str(source_path), cv2.IMREAD_COLOR)
+        if frame_bgr is None:
+            raise FrameError(f"could not read input image: {source_path}")
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # 1. Save a preview derived from the existing PNG.
+    # 1. Save the captured frame or a preview of the supplied image.
     if not cv2.imwrite(str(img_path), frame_bgr):
         raise FrameError(f"could not save image: {img_path}")
     height, width, _ = frame_bgr.shape
@@ -249,8 +254,9 @@ def main(
     # 5. Aggregate payload and write JSON
     payload: dict[str, Any] = {
         "capture_metadata": {
-            "source": "existing_image",
-            "source_image_path": str(source_path.resolve()),
+            "source": "csi_camera" if source_path is None else "existing_image",
+            **({"pipeline": pipeline, "configured_capture_fps": 30}
+               if source_path is None else {"source_image_path": str(source_path.resolve())}),
             "saved_image_path": str(img_path.resolve()),
             "width": width,
             "height": height,
@@ -266,7 +272,7 @@ def main(
             "assumptions": {
                 "storage": "tightly packed payloads; excludes stride and buffer padding",
                 "stage_costs": "one full input read plus one output write per stage",
-                "fps": "assumed for budgeting; not measured from the still image",
+                "fps": "assumed for budgeting; not measured from a single frame",
                 "normalization": "full-resolution uint8 input to FP32 output",
             },
             "bandwidth_bytes_per_sec": {
@@ -286,19 +292,19 @@ def main(
         json.dump(payload, f, indent=4)
         f.write("\n")
 
-    print(f"Input image analysed    : {source_path}")
+    print(f"Input analysed          : {source_path if source_path is not None else 'CSI camera'}")
     print(f"Frame preview saved to  : {img_path}")
     print(f"Analysis saved to       : {json_path}")
     print(f"Classification result   : {classification.upper()} ({reason})")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyse an existing image and price frame memory traffic.")
+    parser = argparse.ArgumentParser(description="Capture a CSI camera frame and price frame memory traffic.")
     parser.add_argument("--input", type=Path,
-                        default=Path(__file__).with_name("all_focus_s1_1.0_s2_3.0.png"))
+                        help="analyse an existing image instead of capturing from the camera")
     parser.add_argument("--output-dir", default=str(Path(__file__).with_name("output")))
     parser.add_argument("--fps", type=float, default=30.0, help="assumed rate for bandwidth budgeting")
     args = parser.parse_args()
     try:
         main(input_image=args.input, output_dir=args.output_dir, target_fps=args.fps)
-    except (FrameError, OSError, cv2.error) as exc:
+    except (FrameError, OSError, RuntimeError, cv2.error) as exc:
         parser.exit(3, f"error: {exc}\n")
