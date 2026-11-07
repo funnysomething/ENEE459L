@@ -51,9 +51,61 @@ git push origin main
 ```bash
 cd lab08/
 
-# Generate the report on the board
+# Install dependencies in your Python environment.
+python -m pip install -r requirements.txt
+
+# Generate face annotations and the edge map.
 python detect_face.py
 ```
+
+Running `python lab08/detect_face.py` from the repository root also works.
+The bundled model and input image are resolved relative to the script. The
+entry point writes `lab08/output_detected.png` and `lab08/edges_scipy.png`.
+The functions also accept other input and output paths and return their
+detections or edge arrays for further analysis.
+
+The face pipeline resizes RGB input to 320×240 with bicubic interpolation,
+normalizes with `(pixel - 127) / 128`, and supplies a contiguous FP32 NCHW
+tensor to RFB-320. It filters face scores above 0.7, applies hard NMS at IoU
+0.3 to the 200 highest-scoring candidates, and maps boxes back to the original
+image. CUDA is selected when the installed ONNX Runtime provides it; otherwise
+the pipeline uses the CPU. A Jetson CUDA-enabled runtime must be installed
+separately to enable GPU inference.
+
+The edge pipeline converts to grayscale, smooths with a Gaussian at sigma 1.4,
+computes Sobel gradients, and scales their magnitude to [0, 255]. Custom
+four-direction suppression uses gradient angles in radians. Hysteresis keeps
+responses at least 60 and recursively tracks all 8-connected responses at
+least 20. Suppressed zero-valued pixels remain background. Constant images
+produce an empty edge map without division by zero. No OpenCV functions are
+used.
+
+### Verification and supplied samples
+
+From the repository root, run:
+
+```bash
+python -m unittest discover -s lab08 -v
+```
+
+The nine tests cover overlapping and touching boxes, NMS limits and empty
+inputs, zero-area boxes, all four gradient directions, connected weak chains
+in both scan directions, threshold boundaries, constant images, real ONNX
+inference on the supplied photo, and a no-detection result. Source images are
+left unchanged.
+
+The supplied photo produces one face with confidence approximately 0.99986
+and integer bounds `(828, 225, 1140, 753)`, matching the sample's green box.
+Default font rendering can vary between Pillow versions.
+
+The generated edge map contains **24,010 edge pixels**, including all **16,508**
+pixels in `sample_edges_scipy.png`. The reference can be reproduced exactly
+by a single top-to-bottom, left-to-right hysteresis scan that discards weak
+pixels before a later strong neighbor is visited. This implementation uses
+full edge tracking instead, retaining an additional **7,502** connected weak
+pixels regardless of scan direction. This difference is intentional and is
+covered by a test with a strong seed at the end of a weak diagonal chain.
+Validation was performed with CPU inference; Jetson GPU timing was not measured.
 
 ## How to Debug your code
 
@@ -62,17 +114,20 @@ There is only one way to debug code -
 
 ## How to save your work
 
-For saving your work, you create a new branch named `solution8` by running the following command.
+Save this work on the existing `solution` branch:
 ```bash
-git switch -c solution8
+git switch solution
 ```
 
 After this, push your changes with following set of commands - 
 ```bash
-git add .
-git commit -m "Adding things"
-git push -u origin solution8
+git add lab08/
+git commit -m "Complete lab08 face detection and Canny edge pipeline"
+git push origin solution
 ```
 
 ## Before you hand in
-Run your code and verify that its output matches the provided sample files. Once you have confirmed that everything is working correctly, push your changes to a new branch. Before submitting the link to your branch on Canvas, please verify that the branch contains the code you wrote and that all of your changes have been successfully pushed.
+Run the code and tests, and compare the generated images with the supplied
+samples, accounting for the hysteresis difference described above. Push the
+completed work to `solution`. Before submitting the branch link on Canvas,
+verify that it contains the code and generated outputs.
