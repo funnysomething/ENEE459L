@@ -82,30 +82,111 @@ def _percentile(xs: Sequence[float], q: float) -> float:
 
 
 def latency_report(ms: Iterable[float]) -> dict[str, Any]:
-    pass
+    """Summarize finite, nonnegative durations in milliseconds."""
+    values = [_finite(v, f"ms[{i}]") for i, v in enumerate(ms)]
+    if not values:
+        raise AgreementError("no latency samples.")
+    if any(v < 0 for v in values):
+        raise AgreementError("latency samples must be nonnegative.")
+    report = {
+        "n": len(values),
+        "mean": sum(values) / len(values),
+        "worst": max(values),
+    }
+    report.update({f"p{q}": _percentile(values, q)
+                   for q in LATENCY_PERCENTILES})
+    report["jitter"] = report["p95"] - report["p50"]
+    return report
 
 
 def speedup(base_ms: float, other_ms: float) -> dict[str, Any]:
-    pass
+    """Compare durations; a negative saving means the other backend is slower."""
+    base = _finite(base_ms, "base_ms")
+    other = _finite(other_ms, "other_ms")
+    if base < 0 or other <= 0:
+        raise AgreementError("base_ms must be nonnegative and other_ms positive.")
+    factor = base / other
+    return {"factor": factor, "faster": factor > 1, "saved_ms": base - other}
+
+
+def _paired_values(a: Sequence[float], b: Sequence[float],
+                   where: str) -> tuple[list[float], list[float]]:
+    if len(a) != len(b) or not len(a):
+        raise AgreementError(f"{where} must have equal, nonzero lengths.")
+    return ([_finite(v, f"{where}.a[{i}]") for i, v in enumerate(a)],
+            [_finite(v, f"{where}.b[{i}]") for i, v in enumerate(b)])
 
 
 def max_abs_dev(a: Sequence[float], b: Sequence[float]) -> dict[str, Any]:
-    pass
+    """Find the largest absolute deviation, choosing the first tied index."""
+    av, bv = _paired_values(a, b, "outputs")
+    deviations = [abs(x - y) for x, y in zip(av, bv)]
+    index = max(range(len(av)), key=deviations.__getitem__)
+    return {"max_abs": deviations[index], "index": index,
+            "a": av[index], "b": bv[index], "n": len(av)}
 
 
 def max_rel_dev(a: Sequence[float], b: Sequence[float],
                 floor: float = REL_FLOOR) -> dict[str, Any]:
-    pass
+    """Measure relative error against b and disclose denominator clamping."""
+    floor = _finite(floor, "floor")
+    if floor <= 0:
+        raise AgreementError("floor must be strictly positive.")
+    av, bv = _paired_values(a, b, "outputs")
+    magnitudes = [abs(v) for v in bv]
+    deviations = [abs(x - y) / max(magnitude, floor)
+                  for x, y, magnitude in zip(av, bv, magnitudes)]
+    index = max(range(len(av)), key=deviations.__getitem__)
+    return {"max_rel": deviations[index], "index": index,
+            "floored": sum(v < floor for v in magnitudes),
+            "denom_min": min(magnitudes), "n": len(av)}
 
 
 def top1_agreement(rows_a: Sequence[Sequence[float]],
                    rows_b: Sequence[Sequence[float]]) -> dict[str, Any]:
-    pass
+    """Compare paired argmaxes, breaking score ties by lowest class index."""
+    if len(rows_a) != len(rows_b) or not len(rows_a):
+        raise AgreementError("score batches must have equal, nonzero lengths.")
+    disagreements = []
+    for i, (row_a, row_b) in enumerate(zip(rows_a, rows_b)):
+        av, bv = _paired_values(row_a, row_b, f"rows[{i}]")
+        top_a = max(range(len(av)), key=av.__getitem__)
+        top_b = max(range(len(bv)), key=bv.__getitem__)
+        if top_a != top_b:
+            disagreements.append(i)
+    n = len(rows_a)
+    disagree = len(disagreements)
+    return {"n": n, "agree": n - disagree, "disagree": disagree,
+            "rate": (n - disagree) / n,
+            "first_disagreement": disagreements[0] if disagree else None}
 
 
 def decision_margin(rows: Sequence[Sequence[float]],
                     tol: float) -> dict[str, Any]:
-    pass
+    """Certify margins against a per-score absolute error bound, tol.
+
+    The winner can fall by tol while the runner-up rises by tol. A margin
+    must therefore exceed 2 * tol to guarantee the same decision; equality
+    can produce a tie and is conservatively counted as unsafe.
+    """
+    tol = _finite(tol, "tol")
+    if tol < 0:
+        raise AgreementError("tol must be nonnegative.")
+    if not len(rows):
+        raise AgreementError("no score rows.")
+    margins = []
+    for i, row in enumerate(rows):
+        if len(row) < 2:
+            raise AgreementError(f"rows[{i}] needs at least two classes.")
+        scores = sorted((_finite(v, f"rows[{i}][{j}]")
+                         for j, v in enumerate(row)), reverse=True)
+        margins.append(scores[0] - scores[1])
+    argmin = min(range(len(margins)), key=margins.__getitem__)
+    below_tol = sum(margin <= 2 * tol for margin in margins)
+    return {"n": len(margins), "min": margins[argmin],
+            "median": _percentile(margins, 50),
+            "mean": sum(margins) / len(margins), "argmin": argmin,
+            "below_tol": below_tol, "safe": below_tol == 0}
 
 #############################################################
 ###############  Main function starts here ##################

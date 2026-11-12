@@ -1,0 +1,52 @@
+{
+    "type": "computed",
+    "value": 12.595,
+    "message": "toy_resnet: FLOPs over bytes, every byte counted once",
+    "per_layer": {
+        "conv1": {
+            "flops": 884736,
+            "bytes": 45920.0,
+            "intensity": 19.2669
+        },
+        "bn1": {
+            "flops": 0,
+            "bytes": 65728.0,
+            "intensity": 0.0
+        },
+        "relu1": {
+            "flops": 0,
+            "bytes": 65536.0,
+            "intensity": 0.0
+        },
+        "res_conv": {
+            "flops": 4718592,
+            "bytes": 70144.0,
+            "intensity": 67.2701
+        },
+        "add1": {
+            "flops": 0,
+            "bytes": 131072.0,
+            "intensity": 0.0
+        },
+        "pool": {
+            "flops": 0,
+            "bytes": 65600.0,
+            "intensity": 0.0
+        },
+        "flatten": {
+            "flops": 0,
+            "bytes": 128.0,
+            "intensity": 0.0
+        },
+        "fc": {
+            "flops": 320,
+            "bytes": 784.0,
+            "intensity": 0.4082
+        }
+    },
+    "total_flops": 5603648,
+    "total_bytes": 444912.0,
+    "flops_per_mac": 2,
+    "cache_reuse_assumed": false,
+    "note": "no fusion and no cache reuse; both would lower the byte column"
+}
